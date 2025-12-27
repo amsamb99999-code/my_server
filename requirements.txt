@@ -3,4 +3,8 @@ python-binance
 tabulate
 python-telegram-bot
 flask
-
+ta
+requests
+dateparser
+pycryptodome
+numpy
