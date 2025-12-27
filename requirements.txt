@@ -1,4 +1,6 @@
-python-binance
 pandas
+python-binance
 tabulate
 python-telegram-bot
+flask
+
