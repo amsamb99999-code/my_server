@@ -1,125 +1,81 @@
-mport os
-import time
-import asyncio
-import threading
-import pandas as pd
-from flask import Flask
+💬 ```python
+from flask import Flask, jsonify
 from binance.client import Client
-from binance.exceptions import BinanceAPIException
-from tabulate import tabulate
-from telegram import Bot
+import pandas as pd
+import ta
+import os
+import time
+import requests
 
-# =================================================================
-# 1. إعداد خادم ويب (Flask) لإرضاء نظام فحص المنافذ في Render
-# =================================================================
 app = Flask(__name__)
 
-@app.route('/')
-def home():
-    return "Bot is alive and scanning!", 200
+api_key = os.environ.get('BINANCE_API_KEY')
+api_secret = os.environ.get('BINANCE_API_SECRET')
+telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
+telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
 
-@app.route('/health')
-def health():
-    return "OK", 200
+client = Client(api_key, api_secret)
 
-def run_web_server():
-    # Render يمرر المنفذ عبر متغير البيئة PORT
-    port = int(os.environ.get("PORT", 10000))
-    print(f"Starting web server on port {port}...")
-    app.run(host='0.0.0.0', port=port)
-
-# =================================================================
-# 2. إعدادات البوت والمتغيرات
-# =================================================================
-API_KEY = os.environ.get('BINANCE_API_KEY', '')
-API_SECRET = os.environ.get('BINANCE_API_SECRET', '')
-TELEGRAM_BOT_TOKEN = os.environ.get('TELEGRAM_BOT_TOKEN', '')
-TELEGRAM_CHAT_ID = os.environ.get('TELEGRAM_CHAT_ID', '')
-
-INTERVAL = Client.KLINE_INTERVAL_4HOUR
-LIMIT = 100
-BB_PERIOD = 20
-VOLUME_FACTOR = 1.5
-SCAN_INTERVAL = 4 * 60 * 60 # 4 ساعات
-
-# =================================================================
-# 3. منطق البوت (المسح والتحليل)
-# =================================================================
-async def send_telegram(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram credentials missing!")
-        return
+def send_telegram_message(token, chat_id, message):
+    url = f"https://api.telegram.org/bot{token}/sendMessage"
+    data = {"chat_id": chat_id, "text": message}
     try:
-        bot = Bot(token=TELEGRAM_BOT_TOKEN)
-        await bot.send_message(chat_id=TELEGRAM_CHAT_ID, text=message, parse_mode='Markdown')
+        requests.post(url, data=data)
     except Exception as e:
-        print(f"Telegram Error: {e}")
+        print(f"خطأ في إرسال رسالة تلغرام: {e}")
 
-def get_data(client, symbol):
-    try:
-        klines = client.get_historical_klines(symbol, INTERVAL, limit=LIMIT)
-        if not klines or len(klines) < BB_PERIOD + 2:
-            return None
-        df = pd.DataFrame(klines, columns=['Time', 'Open', 'High', 'Low', 'Close', 'Volume', 'CT', 'QV', 'NT', 'TB', 'TQ', 'I'])
-        df[['Close', 'Volume']] = df[['Close', 'Volume']].apply(pd.to_numeric)
-        return df[['Close', 'Volume']]
-    except:
+def get_klines_df(symbol, interval='5m', limit=50):
+    klines = client.get_klines(symbol=symbol, interval=interval, limit=limit)
+    df = pd.DataFrame(klines, columns=[
+        'Open time', 'Open', 'High', 'Low', 'Close', 'Volume',
+        'Close time', 'Quote asset volume', 'Number of trades',
+        'Taker buy base asset volume', 'Taker buy quote asset volume', 'Ignore'])
+    df['Close'] = df['Close'].astype(float)
+    return df
+
+def calculate_indicators(df):
+    df['ema_short'] = ta.trend.EMAIndicator(df['Close'], window=9).ema_indicator()
+    df['ema_long'] = ta.trend.EMAIndicator(df['Close'], window=21).ema_indicator()
+    df['rsi'] = ta.momentum.RSIIndicator(df['Close'], window=14).rsi()
+    return df
+
+def generate_signal(df):
+    if len(df) < 2:
+        return None
+    prev_short = df['ema_short'].iloc[-2]
+    prev_long = df['ema_long'].iloc[-2]
+    curr_short = df['ema_short'].iloc[-1]
+    curr_long = df['ema_long'].iloc[-1]
+    rsi = df['rsi'].iloc[-1]
+
+    if (prev_short <= prev_long) and (curr_short > curr_long) and (rsi < 30):
+        return "شراء"
+    elif (prev_short >= prev_long) and (curr_short < curr_long) and (rsi > 70):
+        return "بيع"
+    else:
         return None
 
-def analyze(df, symbol):
-    df['SMA'] = df['Close'].rolling(window=BB_PERIOD).mean()
-    df['Std'] = df['Close'].rolling(window=BB_PERIOD).std()
-    df['Upper'] = df['SMA'] + (df['Std'] * 2)
-    df['Lower'] = df['SMA'] - (df['Std'] * 2)
-    
-    last = df.iloc[-2] # الشمعة المكتملة الأخيرة
-    prev_vols = df['Volume'].iloc[-BB_PERIOD-2:-2].mean()
-    
-    if last['Close'] > last['Upper'] and last['Volume'] > prev_vols * VOLUME_FACTOR:
-        return {'Symbol': symbol, 'Signal': 'BUY 🚀', 'Price': last['Close']}
-    elif last['Close'] < last['Lower'] and last['Volume'] > prev_vols * VOLUME_FACTOR:
-        return {'Symbol': symbol, 'Signal': 'SELL 📉', 'Price': last['Close']}
-    return None
-
-async def main_bot_logic():
-    print("Bot logic started...")
-    client = Client(API_KEY, API_SECRET)
-    
-    while True:
+@app.route('/signals')
+def signals():
+    symbols = [s['symbol'] for s in client.get_exchange_info()['symbols']
+               if s['quoteAsset'] == 'USDT' and s['status'] == 'TRADING']
+    signals_dict = {}
+    for symbol in symbols:
         try:
-            print("Starting new scan...")
-            exchange_info = client.get_exchange_info()
-            symbols = [s['symbol'] for s in exchange_info['symbols'] if s['symbol'].endswith('USDT') and s['status'] == 'TRADING'][:50] # تحديد العدد لتجنب الحظر
-            
-            signals = []
-            for symbol in symbols:
-                df = get_data(client, symbol)
-                res = analyze(df, symbol) if df is not None else None
-                if res:
-                    signals.append(res)
-                await asyncio.sleep(0.2) # تجنب Rate Limit
-            
-            report = f"🔍 *Scan Report ({time.strftime('%H:%M')})*\n"
-            if signals:
-                report += "```\n" + tabulate(pd.DataFrame(signals), headers='keys', tablefmt='simple') + "\n```"
-            else:
-                report += "No strong signals found."
-            
-            await send_telegram(report)
-            print(f"Scan complete. Sleeping for {SCAN_INTERVAL/3600} hours...")
-            await asyncio.sleep(SCAN_INTERVAL)
-            
+            df = get_klines_df(symbol)
+            df = calculate_indicators(df)
+            signal = generate_signal(df)
+            if signal:
+                signals_dict[symbol] = signal
+                # إرسال إشعار لتلجرام
+                if telegram_token and telegram_chat_id:
+                    message = f"إشارة {signal} لـ {symbol}"
+                    send_telegram_message(telegram_token, telegram_chat_id, message)
         except Exception as e:
-            print(f"Main Loop Error: {e}")
-            await asyncio.sleep(60)
+            print(f"خطأ في {symbol}: {e}")
+        time.sleep(0.3)
+    return jsonify(signals_dict)
 
-# =================================================================
-# 4. نقطة الانطلاق
-# =================================================================
-if __name__ == "__main__":
-    # 1. تشغيل خادم الويب في خيط منفصل
-    web_thread = threading.Thread(target=run_web_server, daemon=True)
-    web_thread.start()
-    
-    # 2. تشغيل منطق البوت في الحلقة الرئيسية
-    asyncio.run(main_bot_logic())
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000)
+```

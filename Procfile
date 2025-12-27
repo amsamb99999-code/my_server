@@ -1,1 +1,1 @@
-worker: python telegram_scanner.py
+web: python app.py
