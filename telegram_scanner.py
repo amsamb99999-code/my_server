@@ -4,24 +4,24 @@ import requests
 from binance.client import Client
 
 # --- Configuration ---
-# Get environment variables
-api_key = os.environ.get('BINANCE_API_KEY')
-api_secret = os.environ.get('BINANCE_API_SECRET')
-telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN')
-telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID')
+# Get environment variables with a check for None
+# We use a placeholder string for missing values to prevent the script from crashing immediately
+# and to provide a clear error message in the logs.
+api_key = os.environ.get('BINANCE_API_KEY', 'MISSING_API_KEY')
+api_secret = os.environ.get('BINANCE_API_SECRET', 'MISSING_API_SECRET')
+telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN', 'MISSING_TELEGRAM_TOKEN')
+telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID', 'MISSING_CHAT_ID')
+
 SYMBOL = "BTCUSDT"
 THRESHOLD = 30000.0
 
-# Initialize Binance Client
-try:
-    client = Client(api_key, api_secret)
-except Exception as e:
-    print(f"Error initializing Binance Client: {e}")
-    # In a real-world scenario, you might want to exit here if the client fails to initialize
-    # exit(1)
-
 def send_telegram_message(token, chat_id, message):
     """Sends a message to a specified Telegram chat."""
+    # Check if the token is actually set before attempting to send
+    if token == 'MISSING_TELEGRAM_TOKEN' or chat_id == 'MISSING_CHAT_ID':
+        print("ERROR: Cannot send Telegram message. TELEGRAM_BOT_TOKEN or CHAT_ID is missing.")
+        return
+
     url = f"https://api.telegram.org/bot{token}/sendMessage"
     data = {
         "chat_id": chat_id,
@@ -29,8 +29,8 @@ def send_telegram_message(token, chat_id, message):
     }
     try:
         response = requests.post(url, data=data)
-        response.raise_for_status() # Raise an exception for bad status codes (4xx or 5xx)
-        print(f"Telegram message sent successfully. Response: {response.json()}")
+        response.raise_for_status()
+        print(f"Telegram message sent successfully. Status: {response.status_code}")
     except requests.exceptions.RequestException as e:
         print(f"Error sending Telegram message: {e}")
 
@@ -38,20 +38,30 @@ def check_price_and_alert():
     """Fetches the price and sends an alert if the threshold is exceeded."""
     print(f"Starting price check for {SYMBOL}...")
     
-    # Check if all necessary tokens are available
-    if not all([api_key, api_secret, telegram_token, telegram_chat_id]):
-        print("ERROR: One or more environment variables (API keys/tokens) are missing.")
-        send_telegram_message(telegram_token, telegram_chat_id, "ERROR: Binance Scanner failed to run due to missing configuration.")
+    # 1. Check for missing API keys before initializing Binance Client
+    if api_key == 'MISSING_API_KEY' or api_secret == 'MISSING_API_SECRET':
+        error_msg = "FATAL ERROR: Binance API keys are missing. Please set BINANCE_API_KEY and BINANCE_API_SECRET in Render Environment."
+        print(error_msg)
+        send_telegram_message(telegram_token, telegram_chat_id, error_msg)
         return
 
+    # 2. Initialize Binance Client
     try:
-        # 1. Get the price
+        client = Client(api_key, api_secret)
+    except Exception as e:
+        error_msg = f"Error initializing Binance Client: {e}"
+        print(error_msg)
+        send_telegram_message(telegram_token, telegram_chat_id, error_msg)
+        return
+
+    # 3. Get the price
+    try:
         ticker = client.get_symbol_ticker(symbol=SYMBOL)
         price = float(ticker['price'])
         
         print(f"Current {SYMBOL} price: {price}")
 
-        # 2. Check the threshold
+        # 4. Check the threshold
         if price > THRESHOLD:
             alert_message = f"ðŸš¨ BTC Price Alert! ðŸš¨\n\nPrice has exceeded the threshold of ${THRESHOLD:,.2f}.\nCurrent Price: ${price:,.2f}"
             send_telegram_message(telegram_token, telegram_chat_id, alert_message)
@@ -62,9 +72,7 @@ def check_price_and_alert():
     except Exception as e:
         error_message = f"An error occurred during the price check: {e}"
         print(error_message)
-        # Optionally send an error alert to Telegram
         send_telegram_message(telegram_token, telegram_chat_id, f"ERROR in Binance Scanner: {e}")
 
 if __name__ == "__main__":
-    # The script runs the check once and then exits, which is perfect for a Cron Job.
     check_price_and_alert()
