@@ -1,78 +1,59 @@
+# -----------------------------------------------------------------------------
+# bot.py - الملف الرئيسي لبوت الصقر (Falcon Bot)
+# -----------------------------------------------------------------------------
+
 import os
-import time
-import requests
-from binance.client import Client
+import logging
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
 
-# --- Configuration ---
-# Get environment variables with a check for None
-# We use a placeholder string for missing values to prevent the script from crashing immediately
-# and to provide a clear error message in the logs.
-api_key = os.environ.get('BINANCE_API_KEY', 'MISSING_API_KEY')
-api_secret = os.environ.get('BINANCE_API_SECRET', 'MISSING_API_SECRET')
-telegram_token = os.environ.get('TELEGRAM_BOT_TOKEN', 'MISSING_TELEGRAM_TOKEN')
-telegram_chat_id = os.environ.get('TELEGRAM_CHAT_ID', 'MISSING_CHAT_ID')
+# إعداد تسجيل الأنشطة (مهم جدًا لمراقبة البوت على Render)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s", level=logging.INFO
+)
+logger = logging.getLogger(__name__)
 
-SYMBOL = "BTCUSDT"
-THRESHOLD = 30000.0
+# هذه الدالة سيتم استدعاؤها عندما يرسل المستخدم أمر /start
+async def start(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ترسل رسالة ترحيبية عند إرسال الأمر /start."""
+    user = update.effective_user
+    # رسالة الترحيب باللغة العربية
+    welcome_message = (
+        f"أهلاً بك يا {user.mention_html()}!\n\n"
+        "أنا **بوت الصقر**، مساعدك الآلي لرصد فرص التداول في بينانس.\n\n"
+        "أنا حاليًا في المرحلة الأولى من التطوير. جرب الأمر التالي لترى أنني أعمل:\n"
+        "/ping"
+    )
+    await update.message.reply_html(welcome_message)
 
-def send_telegram_message(token, chat_id, message):
-    """Sends a message to a specified Telegram chat."""
-    # Check if the token is actually set before attempting to send
-    if token == 'MISSING_TELEGRAM_TOKEN' or chat_id == 'MISSING_CHAT_ID':
-        print("ERROR: Cannot send Telegram message. TELEGRAM_BOT_TOKEN or CHAT_ID is missing.")
+
+# هذه الدالة سيتم استدعاؤها عندما يرسل المستخدم أمر /ping
+async def ping(update: Update, context: ContextTypes.DEFAULT_TYPE) -> None:
+    """ترد على المستخدم لتأكيد أن البوت يعمل."""
+    await update.message.reply_text("أنا على قيد الحياة وأعمل بشكل سليم! 🚀")
+
+
+def main() -> None:
+    """الدالة الرئيسية لتشغيل البوت."""
+    # نحصل على مفتاح بوت تليجرام من متغيرات البيئة (هذا آمن للنشر)
+    TELEGRAM_TOKEN = os.environ.get("TELEGRAM_TOKEN")
+    if not TELEGRAM_TOKEN:
+        logger.error("خطأ: لم يتم العثور على مفتاح بوت تليجرام (TELEGRAM_TOKEN).")
         return
 
-    url = f"https://api.telegram.org/bot{token}/sendMessage"
-    data = {
-        "chat_id": chat_id,
-        "text": message
-    }
-    try:
-        response = requests.post(url, data=data)
-        response.raise_for_status()
-        print(f"Telegram message sent successfully. Status: {response.status_code}")
-    except requests.exceptions.RequestException as e:
-        print(f"Error sending Telegram message: {e}")
+    # إنشاء كائن التطبيق وربطه بمفتاح البوت
+    application = Application.builder().token(TELEGRAM_TOKEN).build()
 
-def check_price_and_alert():
-    """Fetches the price and sends an alert if the threshold is exceeded."""
-    print(f"Starting price check for {SYMBOL}...")
-    
-    # 1. Check for missing API keys before initializing Binance Client
-    if api_key == 'MISSING_API_KEY' or api_secret == 'MISSING_API_SECRET':
-        error_msg = "FATAL ERROR: Binance API keys are missing. Please set BINANCE_API_KEY and BINANCE_API_SECRET in Render Environment."
-        print(error_msg)
-        send_telegram_message(telegram_token, telegram_chat_id, error_msg)
-        return
+    # تسجيل الأوامر التي سيفهمها البوت
+    application.add_handler(CommandHandler("start", start))
+    application.add_handler(CommandHandler("ping", ping))
 
-    # 2. Initialize Binance Client
-    try:
-        client = Client(api_key, api_secret)
-    except Exception as e:
-        error_msg = f"Error initializing Binance Client: {e}"
-        print(error_msg)
-        send_telegram_message(telegram_token, telegram_chat_id, error_msg)
-        return
+    # بدء تشغيل البوت (سيبقى يعمل ويستمع للأوامر)
+    logger.info("تم بدء تشغيل البوت...")
+    application.run_polling()
 
-    # 3. Get the price
-    try:
-        ticker = client.get_symbol_ticker(symbol=SYMBOL)
-        price = float(ticker['price'])
-        
-        print(f"Current {SYMBOL} price: {price}")
-
-        # 4. Check the threshold
-        if price > THRESHOLD:
-            alert_message = f"ðŸš¨ BTC Price Alert! ðŸš¨\n\nPrice has exceeded the threshold of ${THRESHOLD:,.2f}.\nCurrent Price: ${price:,.2f}"
-            send_telegram_message(telegram_token, telegram_chat_id, alert_message)
-            print("Alert sent.")
-        else:
-            print(f"Price ${price:,.2f} is below the threshold ${THRESHOLD:,.2f}. No alert sent.")
-
-    except Exception as e:
-        error_message = f"An error occurred during the price check: {e}"
-        print(error_message)
-        send_telegram_message(telegram_token, telegram_chat_id, f"ERROR in Binance Scanner: {e}")
 
 if __name__ == "__main__":
-    check_price_and_alert()
+    main()
+
+
