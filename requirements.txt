@@ -1,10 +1,7 @@
-pandas
+Flask
 python-binance
-tabulate
-python-telegram-bot
-flask
+pandas
 ta
 requests
-dateparser
-pycryptodome
-numpy
+gunicorn
+
